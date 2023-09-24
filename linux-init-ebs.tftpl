@@ -1,0 +1,96 @@
+#cloud-config
+fdqn:     ${HOSTNAME}.internal.digiqal.com
+hostname: ${HOSTNAME}
+timezone: Asia/Hong_Kong
+prefer_fqdn_over_hostname: true
+
+package_upgrade: true
+packages:
+  - epel-release
+  - telnet
+  - unzip
+
+write_files:
+    - content: |
+        {
+          "agent": {
+            "run_as_user": "root"
+          },
+          "logs": {
+            "logs_collected": {
+              "files": {
+                "collect_list": [
+                  {
+                    "file_path": "/var/log/messages",
+                    "log_group_name": "ENV-syslogs",
+                    "log_stream_name": "HOSTNAME",
+                    "retention_in_days" : RETENTION_DAYS
+                  },
+                  {
+                    "file_path": "/var/log/secure",
+                    "log_group_name": "ENV-secure-logs",
+                    "log_stream_name": "HOSTNAME",
+                    "retention_in_days" : RETENTION_DAYS
+                  },
+                  {
+                    "file_path": "/var/log/clamd.scan",
+                    "log_group_name": "ENV-clamd-logs",
+                    "log_stream_name": "HOSTNAME",
+                    "retention_in_days" : RETENTION_DAYS
+                  },
+                  {
+                    "file_path": "/var/log/nginx/access.log",
+                    "log_group_name": "ENV-nginx-access-log",
+                    "log_stream_name": "HOSTNAME",
+                    "retention_in_days" : RETENTION_DAYS
+                  },
+                  {
+                    "file_path": "/var/log/nginx/error.log",
+                    "log_group_name": "ENV-nginx-error-log",
+                    "log_stream_name": "HOSTNAME",
+                    "retention_in_days" : RETENTION_DAYS
+                  }
+                ]
+              }
+            }
+          }
+        }
+      path: /home/centos/deployment-package/config.json
+
+runcmd:
+    # Install CLI
+    - curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+    - unzip awscliv2.zip
+    - sudo ./aws/install
+
+    # Install agent
+    - sudo yum install -y https://s3.ap-east-1.amazonaws.com/amazon-ssm-ap-east-1/latest/linux_amd64/amazon-ssm-agent.rpm
+
+    # change hostname
+    - sudo hostnamectl set-hostname --static ${HOSTNAME}.internal.digiqal.com
+
+    # Install CloudWatch agent
+
+    - curl https://s3.amazonaws.com/amazoncloudwatch-agent/centos/amd64/latest/amazon-cloudwatch-agent.rpm --output amazon-cloudwatch-agent.rpm 
+    - sudo rpm -U ./amazon-cloudwatch-agent.rpm
+    - sudo mv /home/centos/deployment-package/config.json /opt/aws/amazon-cloudwatch-agent/bin/config.json
+    - sudo sed -i 's/ENV/${ENV}/g' /opt/aws/amazon-cloudwatch-agent/bin/config.json
+    - sudo sed -i 's/HOSTNAME/${HOSTNAME}/g' /opt/aws/amazon-cloudwatch-agent/bin/config.json
+    - sudo sed -i 's/RETENTION_DAYS/-1/g' /opt/aws/amazon-cloudwatch-agent/bin/config.json
+    - sudo mkdir -p /usr/share/collectd/
+    - sudo touch /usr/share/collectd/types.db
+    - sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s -c file:/opt/aws/amazon-cloudwatch-agent/bin/config.json
+    - sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -m ec2 -a status
+    - sudo tail -10 /opt/aws/amazon-cloudwatch-agent/logs/amazon-cloudwatch-agent.log
+
+    # Mount disk
+    - mkfs -t xfs /dev/nvme1n1
+    - mkdir /data1
+    - mount /dev/nvme1n1 /data1
+    - cp /etc/fstab /etc/fstab.orig
+    - uuid=$(blkid -s UUID -ovalue /dev/nvme1n1)
+    - sed -i "3i UUID=$uuid     /data1      xfs    defaults,nofail   0   2" /etc/fstab
+    - umount /data1
+    - mount -a
+
+output : { all : '| tee -a /var/log/cloud-init-output.log' }
